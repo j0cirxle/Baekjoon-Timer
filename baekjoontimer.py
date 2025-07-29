@@ -9,10 +9,6 @@ from selenium.webdriver.common.by import By
 import undetected_chromedriver as uc
 import ctypes
 
-
-ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", sys.executable, " ".join(sys.argv), None, 1)
-
 class TimerThread(QThread):
     time_changed = pyqtSignal(int,str)
     seconds = 0

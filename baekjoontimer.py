@@ -1,30 +1,36 @@
 import sys
 import time
-from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QPushButton, QGraphicsDropShadowEffect
+from PyQt5.QtWidgets import QApplication, QWidget, QLabel, QPushButton, QGraphicsDropShadowEffect,QListWidget
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QFontDatabase, QColor
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+import undetected_chromedriver as uc
+import ctypes
+
+
+ctypes.windll.shell32.ShellExecuteW(
+        None, "runas", sys.executable, " ".join(sys.argv), None, 1)
 
 class TimerThread(QThread):
     time_changed = pyqtSignal(int,str)
-
+    seconds = 0
     def __init__(self):
         super().__init__()
         self.running = True
         self.paused = True  # 처음부터 멈춤 상태
         self.seconds = 0
-
     def run(self):
         while self.running:
             self.msleep(200)
             if not self.paused:
                 self.sleep(1)
                 self.seconds += 1
-                
+                seconds = self.seconds
                 self.time_changed.emit(self.seconds,"red")
             else:
+                seconds = self.seconds
                 self.time_changed.emit(self.seconds,"green")
 
     def stop(self):
@@ -34,6 +40,7 @@ class TimerThread(QThread):
 
     def pause(self):
         self.paused = True
+        seconds = self.seconds
         self.time_changed.emit(self.seconds,"green")
 
     def resume(self):
@@ -46,20 +53,26 @@ class TimerThread(QThread):
 
 class SeleniumThread(QThread):
     finished_signal = pyqtSignal(str,str)
+    signal_send = pyqtSignal(str)
+    signal_log = pyqtSignal(str,int,str)
 
     def __init__(self,timer_thread):
         super().__init__()
         self.driver = None
         self.checking_n = True
         self.cnt = 0
+        self.cnt_answp = 0
         self.timer_thread = timer_thread
     def run(self):
         try:
-            chrome_options = Options()
-            chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options = Options()
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_experimental_option("useAutomationExtension", False)
 
-            self.driver = webdriver.Chrome(options=chrome_options)
+            self.driver = webdriver.Chrome(options=options)
             self.driver.get("https://www.acmicpc.net/")
+
             title = "Baekjoon Online Judge Timer"
             self.check()
             self.finished_signal.emit(f"{title}", "white")
@@ -80,11 +93,14 @@ class SeleniumThread(QThread):
                 number = ""
                 name = ""
 
+                seconds = self.timer_thread.seconds
+
                 for el in elements:
                     print(el.text)
                     if "맞았습니다!!" in el.text or "100점" in el.text:
                         self.timer_thread.pause()
                         try:
+                            self.cnt_answp += 1
                             for prob in problems:
                                 number = prob.text.strip()
                                 name = prob.get_attribute("data-original-title").strip()
@@ -93,7 +109,10 @@ class SeleniumThread(QThread):
                             print("문제 정보 접근 중 오류:", e)
                             number = ""
                             name = ""
+                        self.signal_send.emit(f"맞은 문제: {self.cnt_answp}")
                         self.finished_signal.emit(f"{name} - {number} Your Correct!!","green")
+                        self.signal_log.emit(f"{name} - {number}",seconds,"green")
+                        
                         self.sleep(10)
 
                 for el in elements_wa:
@@ -108,7 +127,8 @@ class SeleniumThread(QThread):
                             number = ""
                             name = ""
                         self.finished_signal.emit(f"{name} - {number} . incorrect or unsolved .","red")
-                        self.sleep(1)
+                        self.signal_log.emit(f"{name} - {number}",seconds,"red")
+                        self.sleep(10)
 
                 for el in elements_tle:
                     if "시간 초과" in el.text:
@@ -122,7 +142,8 @@ class SeleniumThread(QThread):
                             number = ""
                             name = ""
                         self.finished_signal.emit(f"{name} - {number} . time_over .","red")
-                        self.sleep(1)
+                        self.signal_log.emit(f"{name} - {number}",seconds,"red")
+                        self.sleep(10)
 
             except Exception as e:
                 print("check 함수 오류 발생, 재시도 중:", e)
@@ -142,9 +163,11 @@ class DigitalTimer(QWidget):
         self.timer_thread = TimerThread()
         self.timer_thread.time_changed.connect(self.update_time)
         self.timer_thread.start()
-
+        
         self.selenium_thread = SeleniumThread(self.timer_thread)
         self.selenium_thread.finished_signal.connect(self.on_selenium_finished)
+        self.selenium_thread.signal_send.connect(self.update_correct_cnt)
+        self.selenium_thread.signal_log.connect(self.update_list)
         self.selenium_thread.start()
 
     def initUI(self):
@@ -163,6 +186,8 @@ class DigitalTimer(QWidget):
             font = QFont(family, 60)
         else:
             font = QFont("Arial", 60)
+
+        
 
         self.label = QLabel("00:00", self)
         self.label.setFont(font)
@@ -206,6 +231,15 @@ class DigitalTimer(QWidget):
         self.btn_reset.setGeometry(390, 150, 100, 35)
         self.btn_reset.clicked.connect(self.reset_timer)
 
+        self.label_correct_cnt = QLabel("맞은 문제:",self)
+        #self.label_correct_cnt.setFont(font)
+        #self.label_correct_cnt.setStyleSheet("color: white; background-color: transparent;")
+        #self.label_correct_cnt.setAlignment(Qt.AlignCenter)
+        self.label_correct_cnt.setGeometry(10, 0, 700, 150)
+
+        self.list_log = QListWidget(self)
+        self.list_log.setGeometry(500, 20, 100, 90)
+
     def start_timer(self):
         self.timer_thread.resume()
 
@@ -215,14 +249,26 @@ class DigitalTimer(QWidget):
     def reset_timer(self):
         self.timer_thread.reset()
 
-    def update_time(self, seconds,color):
+    def update_time(self,seconds,color):
         m = seconds // 60
         s = seconds % 60
+        
         self.label.setText(f"{m:02}:{s:02}")
-
         self.label.setStyleSheet(
             f"color: {color};"
         )
+
+    def update_list(self,msg,seconds,color):
+        m = seconds // 60
+        s = seconds % 60
+        from PyQt5.QtWidgets import QListWidgetItem
+        from PyQt5.QtGui import QColor, QBrush
+        item = QListWidgetItem(f"{msg} ({m:02} : {s:02})")
+        item.setBackground(QBrush(QColor(color)))
+        self.list_log.addItem(item)
+
+    def update_correct_cnt(self,msg):
+        self.label_correct_cnt.setText(msg)
 
     def on_selenium_finished(self, msg,color):
         self.status_label.setText(msg)
